@@ -1,38 +1,27 @@
 package com.commercelab.orderservice.dto;
 
+import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
+import lombok.*;
 
+import java.math.BigDecimal;
+import java.util.UUID;
+
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
 public class OrderItemRequest {
+
     @NotNull
-    private Long productId;
+    private UUID productId;
 
     @NotNull
     @Positive
     private Integer quantity;
 
-    // Constructors
-    public OrderItemRequest() {}
-
-    public OrderItemRequest(Long productId, Integer quantity) {
-        this.productId = productId;
-        this.quantity = quantity;
-    }
-
-    // Getters and Setters
-    public Long getProductId() {
-        return productId;
-    }
-
-    public void setProductId(Long productId) {
-        this.productId = productId;
-    }
-
-    public Integer getQuantity() {
-        return quantity;
-    }
-
-    public void setQuantity(Integer quantity) {
-        this.quantity = quantity;
-    }
+    @NotNull
+    @DecimalMin(value = "0.0", inclusive = false)
+    private BigDecimal unitPrice;
 }
