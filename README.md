@@ -14,7 +14,8 @@ Mini e-ticaret + finans mikroservis vitrin projesi.
 
 | Servis | Durum | Port | Açıklama |
 |---|---|---|---|
-| order-service | Hafta 2 (aktif) | 8081 | Saga orchestrator |
+| order-service | Hafta 2 (aktif) | 8081 | Order CRUD + REST giriş noktası |
+| saga-service | Hafta 2 (aktif) | 8089 | Sipariş akışı orchestrator (state machine + compensation) |
 | payment-service | Hafta 2 (aktif) | 8082 | Ödeme + idempotency |
 | inventory-service | Hafta 2 (aktif) | 8083 | Stok rezervasyonu |
 | catalog-service | Hafta 3 | 8084 | Ürün CRUD |
@@ -47,6 +48,15 @@ commerce-project/
 ├── libs/common-events/     # Paylaşılan event şemaları
 └── docs/adr/               # Architecture Decision Records
 ```
+
+## Saga yaklaşımı — hybrid
+
+Proje **iki saga desenini de** kullanır, **flow'a göre**:
+
+- **Sipariş yerleştirme** (order → payment → stock → completion): **Orchestration**, ayrı `saga-service` üzerinden. Çok adımlı, compensation gerekiyor, state takibi kritik.
+- **Sipariş tamamlandıktan sonra fan-out** (notification, analytics, loyalty, search index): **Choreography**, `order.events` üzerinden. Compensation yok, dinleyiciler bağımsız.
+
+Detay: `docs/adr/0001-saga-orchestration-via-dedicated-service.md`.
 
 ## Disiplin
 

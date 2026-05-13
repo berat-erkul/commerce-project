@@ -12,15 +12,14 @@
     </parent>
 
     <groupId>com.commercelab</groupId>
-    <artifactId>payment-service</artifactId>
+    <artifactId>saga-service</artifactId>
     <version>0.0.1-SNAPSHOT</version>
-    <name>payment-service</name>
-    <description>Payment processing with idempotency + Stripe Test Mode</description>
+    <name>saga-service</name>
+    <description>Saga orchestrator — state machine, command dispatch, compensation</description>
 
     <properties>
         <java.version>21</java.version>
         <testcontainers.version>1.20.4</testcontainers.version>
-        <stripe-java.version>28.2.0</stripe-java.version>
     </properties>
 
     <dependencies>
@@ -67,14 +66,6 @@
             <groupId>com.fasterxml.jackson.datatype</groupId>
             <artifactId>jackson-datatype-jsr310</artifactId>
         </dependency>
-
-        <!-- Stripe Java SDK — Test Mode için. capture_method=manual = TCC -->
-        <dependency>
-            <groupId>com.stripe</groupId>
-            <artifactId>stripe-java</artifactId>
-            <version>${stripe-java.version}</version>
-        </dependency>
-
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>

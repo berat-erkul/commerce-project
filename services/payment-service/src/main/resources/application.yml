@@ -6,15 +6,19 @@ spring:
     name: payment-service
   datasource:
     url: jdbc:postgresql://localhost:5434/paymentdb
-    username: payment
-    password: payment
+    username: ${DB_USER:payment}
+    password: ${DB_PASSWORD:payment}
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: validate
     properties:
       hibernate:
         format_sql: true
     show-sql: true
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
   kafka:
     bootstrap-servers: localhost:9094
     consumer:
@@ -27,6 +31,17 @@ spring:
       properties:
         enable.idempotence: true
 
+# Stripe Test Mode (sandbox) — gerçek para yok
+# Test API key: stripe.com Dashboard → Developers → API keys → "Test mode" → Secret key (sk_test_...)
+# M4'te ger çek çağrı yapılacak; şimdilik env'den okunur, default placeholder
+stripe:
+  api-key: ${STRIPE_SECRET_KEY:sk_test_replace_me}
+  # TCC: PaymentIntent capture_method=manual ile authorize-confirm ayrımı.
+  # Authorize sonrası para müşterinin kartında "hold" durumda;
+  # capture() ile gerçekten çekilir, cancel() ile hold serbest bırakılır.
+  capture-method: manual
+  webhook-secret: ${STRIPE_WEBHOOK_SECRET:whsec_replace_me}
+
 management:
   endpoints:
     web:
@@ -35,3 +50,9 @@ management:
   endpoint:
     health:
       show-details: always
+
+logging:
+  level:
+    com.commercelab: DEBUG
+    org.springframework.kafka: INFO
+    com.stripe: INFO

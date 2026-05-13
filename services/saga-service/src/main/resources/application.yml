@@ -1,13 +1,13 @@
 server:
-  port: 8083
+  port: 8089
 
 spring:
   application:
-    name: inventory-service
+    name: saga-service
   datasource:
-    url: jdbc:postgresql://localhost:5435/inventorydb
-    username: ${DB_USER:inventory}
-    password: ${DB_PASSWORD:inventory}
+    url: jdbc:postgresql://localhost:5436/sagadb
+    username: ${DB_USER:saga}
+    password: ${DB_PASSWORD:saga}
   jpa:
     hibernate:
       ddl-auto: validate
@@ -22,7 +22,7 @@ spring:
   kafka:
     bootstrap-servers: localhost:9094
     consumer:
-      group-id: inventory-service
+      group-id: saga-service
       auto-offset-reset: earliest
       properties:
         spring.json.trusted.packages: "*"
@@ -30,6 +30,22 @@ spring:
       acks: all
       properties:
         enable.idempotence: true
+
+# Saga watcher konfigürasyonu — compensation retry zamanlaması
+saga:
+  watcher:
+    poll-interval-ms: 5000
+  compensation:
+    max-retry-attempts: 10
+    initial-backoff-ms: 1000
+    max-backoff-ms: 14400000   # 4 saat
+    backoff-multiplier: 2.0
+    jitter-percent: 25         # ±%25 jitter (thundering herd önleme)
+
+# Outbox poller
+outbox:
+  poll-interval-ms: 1000
+  batch-size: 100
 
 management:
   endpoints:

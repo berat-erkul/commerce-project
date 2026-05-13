@@ -6,15 +6,19 @@ spring:
     name: order-service
   datasource:
     url: jdbc:postgresql://localhost:5433/orderdb
-    username: order
-    password: order
+    username: ${DB_USER:order}
+    password: ${DB_PASSWORD:order}
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: validate
     properties:
       hibernate:
         format_sql: true
     show-sql: true
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
   kafka:
     bootstrap-servers: localhost:9094
     consumer:
@@ -26,6 +30,12 @@ spring:
       acks: all
       properties:
         enable.idempotence: true
+        # NOTE: enable.idempotence=true broker'da aynı session içindeki retry
+        # duplicate'lerini yutar (PID + sequence number). Worker restart sonrası
+        # PID yenilenir, koruma BOZULUR. Cross-restart exactly-once için
+        # transactional.id eklenmesi gerekir — bu Hafta 2 / M2'de outbox publisher
+        # worker yazılırken konuşulacak. Şimdilik consumer-side processed_events
+        # tablosu (Katman 1) restart duplicate'lerini yakalayacak.
 
 management:
   endpoints:
@@ -35,3 +45,8 @@ management:
   endpoint:
     health:
       show-details: always
+
+logging:
+  level:
+    com.commercelab: DEBUG
+    org.springframework.kafka: INFO
