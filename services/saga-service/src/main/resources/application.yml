@@ -20,7 +20,7 @@ spring:
     locations: classpath:db/migration
     baseline-on-migrate: true
   kafka:
-    bootstrap-servers: localhost:9094
+    bootstrap-servers: localhost:9092
     consumer:
       group-id: saga-service
       auto-offset-reset: earliest
