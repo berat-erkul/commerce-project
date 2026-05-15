@@ -1,7 +1,7 @@
 package com.commercelab.orderservice.service.impl;
 
-import com.commercelab.orderservice.repo.OrderRepository;
-import com.commercelab.orderservice.repo.OutboxEventRepository;
+import com.commercelab.orderservice.repo.IOrderRepository;
+import com.commercelab.orderservice.repo.IOutboxEventRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -10,8 +10,8 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 class OrderPersister {
 
-    private final OrderRepository orderRepository;
-    private final OutboxEventRepository outboxRepository;
+    private final IOrderRepository orderRepository;
+    private final IOutboxEventRepository outboxRepository;
 
     @Transactional
     public void persist(OrderFactory.OrderAggregate agg) {

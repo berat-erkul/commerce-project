@@ -20,13 +20,15 @@ spring:
     locations: classpath:db/migration
     baseline-on-migrate: true
   kafka:
-    bootstrap-servers: localhost:9094
+    bootstrap-servers: localhost:9092
     consumer:
       group-id: order-service
       auto-offset-reset: earliest
       properties:
         spring.json.trusted.packages: "*"
     producer:
+      # acks=all + enable.idempotence=true => aynı producer session'ı içinde retry-dedup (PID+sequence).
+      # acks=all tek başına idempotency vermez; enable.idempotence ön koşuludur.
       acks: all
       properties:
         enable.idempotence: true

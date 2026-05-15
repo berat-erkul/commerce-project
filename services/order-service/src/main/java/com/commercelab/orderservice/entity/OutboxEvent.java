@@ -10,7 +10,12 @@ import java.util.Map;
 import java.util.UUID;
 
 @Entity
-@Table(name = "outbox_events")
+@Table(
+        name = "outbox_events",
+        indexes = {
+                @Index(name = "idx_outbox_status_created_at", columnList = "status, created_at"),
+        }
+)
 @Getter
 @Setter
 @NoArgsConstructor
