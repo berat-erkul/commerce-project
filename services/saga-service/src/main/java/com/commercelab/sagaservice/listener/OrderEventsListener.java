@@ -39,7 +39,7 @@ public class OrderEventsListener {
                 ack.acknowledge();
                 return;
             }
-            orchestrator.startOrderPlacementSaga(event);
+            orchestrator.startOrderPlacementSaga(event); //Bu işlem tamamlanmadan ACK dönmüyoruz! Ve hata çıkarsa try catch ile direkt ACK dönmüyoruz.
             ack.acknowledge();
         } catch (Exception ex) {
             // ack atmıyoruz → in-memory error handler retry edecek (Gün 3'te DLQ stack gelecek).
