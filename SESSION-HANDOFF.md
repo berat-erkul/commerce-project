@@ -1,60 +1,58 @@
 # SESSION HANDOFF — commerce-lab orchestrator saga (M3-extended)
 
-**Son güncelleme:** 2026-05-16
-**Faz/Hafta:** Faz 1 / Hafta 2 — Gün 1 mid-way
+**Son güncelleme:** 2026-05-17
+**Faz/Hafta:** Faz 1 / Hafta 2 — Gün 1 sonu (Task #3 tamam, Task #4 sırada)
 **Otoriter referanslar:** `docs/adr/0001-saga-orchestration-via-dedicated-service.md` + `libs/common-events/*.java`
 
 ---
 
 ## ⚡ NEXT — sıradaki ilk eylem
 
-**Task:** #3 (in_progress) — Listener 2/3 = `PaymentEventsListener` zinciri.
+**Task:** #4 (pending) — `inventory-service` implementasyonu. Saga-service kolu (Task #3) tamamen kapandı; inventory-service şu an saga'nın bastığı `ReserveStock` komutlarını tüketmiyor → uçtan uca akış kilitli.
 
-**Yazılacaklar (kesin liste, isimler, paketler):**
-| Dosya | Sorumluluğu | Type |
-|---|---|---|
-| `service/SagaAdvanceFactory.java` | `AdvanceAggregate` record + `buildAdvanceToReserveStock(SagaInstance, PaymentCompleted)` | NEW, no DB |
-| `service/SagaAdvancePersister.java` | `persistAdvanceToReserveStock(eventId, PaymentCompleted)` | NEW, @Transactional |
-| `service/SagaFailPersister.java` | `failOnPaymentFailed(eventId, PaymentFailed)` — emits OrderCancelled | NEW, @Transactional |
-| `listener/PaymentEventsListener.java` | header-discriminated dispatcher → orchestrator | NEW |
-| `service/SagaOrchestrator.java` | + `onPaymentCompleted` + `onPaymentFailed` metodları | EDIT |
-| `repo/ISagaInstanceRepository.java` | + `findByIdForUpdate(UUID)` with `@Lock(PESSIMISTIC_WRITE)` | EDIT |
-| `repo/ISagaStepHistoryRepository.java` | + lookup en son STARTED FORWARD step | EDIT |
+**Yazılacaklar (kesin liste):**
+| Dosya | Sorumluluğu |
+|---|---|
+| `inventory-service/entity/{Stock,Reservation,OutboxEvent,ProcessedEvent}.java` | JPA layer (mevcut V1 schema'ya göre) |
+| `inventory-service/repo/*.java` | 4 repo (Stock pessimistic findByProductIdForUpdate) |
+| `inventory-service/listener/InventoryCommandsListener.java` | `inventory.commands` consume; header discriminator (ReserveStock / ReleaseStock) |
+| `inventory-service/service/StockReservationService.java` | pessimistic lock per productId + atomic decrement + reservation row + outbox event |
+| `inventory-service/service/OutboxFactory.java` | saga-service'inkiyle aynı standart (event-type + saga-instance-id header) |
+| `inventory-service/worker/OutboxPublisher.java` | saga-service patron — kopyala/sadeleştir |
+| `inventory-service/config/Kafka{Producer,Consumer}Config.java` | aynı template (acks=all, idempotent, MANUAL_IMMEDIATE) |
 
-**Kilitli kararlar (re-derive ETME, doğrudan uygula):**
+**Kilitli kararlar:**
+1. **Pessimistic lock per `productId`** — concurrent reservation race koruması. `SELECT ... WHERE product_id = ? FOR UPDATE`.
+2. **Stock decrement atomic with reservation insert** — tek tx içinde stock UPDATE + reservation INSERT + outbox INSERT.
+3. **Yetersiz stok = StockReservationFailed event** (exception değil, normal akış). Saga-service compensation tetikleyecek (zaten yazıldı: `SagaCompensatePersister`).
+4. **Idempotency 2-katmanlı yine:** K1 processed_events + K2 `reservations.saga_instance_id` UNIQUE constraint.
+5. **Header standardı zorunlu** — saga-service header'a göre discriminator yapıyor. ReserveStock'a `event-type=StockReserved` veya `StockReservationFailed` header'ı koymak şart.
 
-1. **Pessimistic write lock** her advance/fail başlangıcında (`findByIdForUpdate`).
-   *Neden:* Kafka rebalance + duplicate redelivery senaryosunda iki thread paralel advance yaparsa lost-update + double command emission olur. Pessimistic kuyrukta tek thread garantisi verir; optimistic kısa-tx + hot row + sık duplicate kombinasyonunda retry storm yaratır.
+---
 
-2. **State guard** her metodun ilk SQL'inden sonra: `if (saga.status != EXPECTED) return SKIPPED_INVALID_STATE`.
-   *Neden:* Üç savunma katmanından üçüncüsü (K1 + lock + state guard). State kolonu otorite — event ne derse desin, kolonun dediği geçer. Kafka'nın at-least-once + saga'nın ileri itilmiş hali kombinasyonu için kritik.
+## ✅ TAMAMLANAN — Task #3 (Gün 1)
 
-3. **PaymentFailed → `OrderCancelled` outbox'a Gün 1'de yazılır** (`order.events`, eventType=OrderCancelled).
-   *Neden:* Compensation **değil**, terminal notification. order-service saga-service'i poll edemez (anti-pattern). FAILED state için `OrderCancelled` basmasak order.status sonsuza kadar PENDING'de takılı kalır. Gün 2'de `SagaCompensationPersister` da CANCELLED state'inde aynı event'i basacak — bir saga ya FAILED ya CANCELLED, ikisi birden değil → duplicate riski yok.
+**Saga-service 3 listener + 5 persister + 2 factory yapısı oturdu.** Aşağıdaki dosyalar üretildi/güncellendi:
 
-4. **Factory `@Transactional` içinde çağrılabilir** (revize kural).
-   *Neden:* `SagaAdvanceFactory.buildAdvanceToReserveStock` `SagaInstance.payload`'a ihtiyaç duyar; payload DB'den geliyor, factory'yi tx dışına çıkarmak imkansız. Disiplin daralt: **factory sınıfı kendi içinde DB-free olsun yeterli**, çağrı yeri tx içinde olabilir. Ufak Jackson convertValue (`OutboxFactory.build` içinde) ms cinsinden, kabul.
+**Listener (3):** `OrderEventsListener`, `PaymentEventsListener`, `InventoryEventsListener`
+**Persister (5):** `SagaStartPersister`, `SagaAdvancePersister`, `SagaFailPersister`, `SagaCompletePersister`, `SagaCompensatePersister`
+**Factory (3):** `SagaStartFactory`, `SagaAdvanceFactory`, `OutboxFactory`
+**Orchestrator:** 5 handler (start, onPaymentCompleted, onPaymentFailed, onStockReserved, onStockReservationFailed)
 
-**`SagaAdvancePersister.persistAdvanceToReserveStock` akışı (kesin sıra):**
-1. K1: `processedRepo.findById(eventId)` → varsa `SKIPPED_DUPLICATE_EVENT`.
-2. `findByIdForUpdate(event.sagaInstanceId())` → null ise `SKIPPED_UNKNOWN_SAGA`.
-3. State guard: `saga.status != AWAITING_PAYMENT` → `SKIPPED_INVALID_STATE`.
-4. PROCESS_PAYMENT step satırını bul (`stepRepo.findFirstBy...StatusOrderByStartedAtDesc(saga.id, PROCESS_PAYMENT, FORWARD, STARTED)`), `status=COMPLETED`, `completedAt=now`.
-5. `factory.buildAdvanceToReserveStock(saga, event)` → `AdvanceAggregate` (yeni step + ReserveStock outbox).
-6. `saga.status=AWAITING_STOCK`, `currentStep=RESERVE_STOCK`, `updatedAt=now`.
-7. `stepRepo.save(agg.newStep)` + `outboxRepo.save(agg.commandOutbox)`.
-8. `processedRepo.insertIfAbsent(eventId, "saga-service-payment", "payment.events", now)`.
+**State machine tamamen kablolu (Gün 1 itibarıyla):**
+```
+OrderCreated  → PENDING → AWAITING_PAYMENT  (ProcessPayment outbox)
+PaymentCompleted → AWAITING_STOCK            (ReserveStock outbox, paymentId payload'a yazılır)
+PaymentFailed  → FAILED                       (OrderCancelled outbox, compensation YOK)
+StockReserved  → COMPLETED                    (OrderCompleted outbox)
+StockReservationFailed → COMPENSATING         (RefundPayment outbox — compensation BAŞLANGICI)
+```
 
-**`SagaFailPersister.failOnPaymentFailed` akışı:**
-1-3. (yukarı ile aynı; consumerName="saga-service-payment", state guard `AWAITING_PAYMENT`)
-4. Step satırı `status=FAILED, completedAt`.
-5. `saga.status=FAILED, completedAt, lastError=event.reason()`.
-6. **OrderCancelled outbox satırı** (`order.events`, payload = `OrderEvents.OrderCancelled` record).
-7. `insertIfAbsent`.
+**SagaCompensatePersister'da MANUAL_INTERVENTION dalı:** `paymentId` payload'da yoksa (AdvancePersister çalışmadan StockReservationFailed gelmiş — anomali) saga MANUAL_INTERVENTION'a alınır, operatör müdahalesi gerekir.
 
-**Listener discriminator:** `payment.events` topic'inde event-type Kafka header'ından oku (payment-service'i biz yazıyoruz, header standardını uyguluyoruz). Header yoksa skip+ack + warn log.
+**SagaPayload eklemesi:** `paymentId` (UUID) — AdvancePersister PaymentCompleted'da yazıyor, CompensatePersister RefundPayment komutunda kullanıyor.
 
-**Test edilebilirlik:** Bu task uçtan uca akış sağlamaz. PaymentEventsListener tek başına test için Task #5 (payment-service STUB) lazım. Unit-level: `SagaAdvancePersister` testcontainers Postgres ile race + state guard + ON CONFLICT senaryoları.
+**Eksik (Gün 2):** RefundCompleted listener — COMPENSATING → CANCELLED + OrderCancelled. `PaymentRefundedListener` veya PaymentEventsListener'da yeni case.
 
 ---
 
@@ -78,11 +76,10 @@ order-service          M1+M2 ✅ ──── üretiyor: OrderCreated → order.
 
 saga-service           Task #1 ✅ JPA layer (entity, enum, repo, dto)
                        Task #2 ✅ Kafka config + OutboxPublisher (with headers)
-                       Task #3 🟡 OrderEventsListener path tamam
-                                  ↓ SİZ BURADAYSINIZ ↓
-                                  PaymentEventsListener + InventoryEventsListener
+                       Task #3 ✅ 3 listener + 5 persister + state machine kablolu
 
 inventory-service      V1 schema + Application class only
+                                  ↓ SİZ BURADAYSINIZ ↓
                        YAPILACAK (Task #4): entity, repo, ReserveStock listener,
                        pessimistic stock service, EventPublisher poller
 
@@ -90,7 +87,7 @@ payment-service        Yok
                        YAPILACAK (Task #5 STUB Gün 1; Task #8 gerçek Stripe Gün 2)
 ```
 
-**Tasks (TaskList ID'leri):** #1 ✅ #2 ✅ #3 🟡 #4–#13 pending. #6 = order-service Completed+Cancelled listener; #12 = DLQ + correlation + outbox publisher async refactor (önemli — IN_FLIGHT state burada eklenecek).
+**Tasks (TaskList ID'leri):** #1 ✅ #2 ✅ #3 ✅ #4–#13 pending. #6 = order-service Completed+Cancelled listener; #12 = DLQ + correlation + outbox publisher async refactor (önemli — IN_FLIGHT state burada eklenecek).
 
 ---
 

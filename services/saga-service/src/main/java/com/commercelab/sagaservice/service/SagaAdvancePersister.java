@@ -79,7 +79,9 @@ class SagaAdvancePersister {
         // Factory CPU iş — yeni step + ReserveStock outbox
         SagaAdvanceFactory.AdvanceAggregate agg = factory.buildAdvanceToReserveStock(saga);
 
-        // Saga state ilerlet
+        // Saga state ilerlet + paymentId memory'e yaz (compensation için lazım)
+        saga.getPayload().setPaymentId(event.paymentId());
+        saga.setPayload(saga.getPayload()); // Hibernate JSONB dirty-trigger (reference reassign)
         saga.setStatus(SagaStatus.AWAITING_STOCK);
         saga.setCurrentStep(StepName.RESERVE_STOCK);
         saga.setUpdatedAt(now);

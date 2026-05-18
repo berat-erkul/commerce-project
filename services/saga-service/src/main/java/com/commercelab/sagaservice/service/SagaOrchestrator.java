@@ -1,5 +1,6 @@
 package com.commercelab.sagaservice.service;
 
+import com.commercelab.events.InventoryEvents;
 import com.commercelab.events.OrderEvents;
 import com.commercelab.events.PaymentEvents;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +23,8 @@ public class SagaOrchestrator {
     private final SagaStartPersister startPersister;
     private final SagaAdvancePersister advancePersister;
     private final SagaFailPersister failPersister;
+    private final SagaCompletePersister completePersister;
+    private final SagaCompensatePersister compensatePersister;
 
     public void startOrderPlacementSaga(OrderEvents.OrderCreated event) {
         SagaStartFactory.SagaStartAggregate agg = startFactory.build(event);
@@ -67,6 +70,39 @@ public class SagaOrchestrator {
             }
         } catch (DataIntegrityViolationException ex) {
             log.info("Race lost on saga fail saga={}", event.sagaInstanceId());
+        }
+    }
+
+    public void onStockReserved(InventoryEvents.StockReserved event) {
+        try {
+            SagaCompletePersister.Result result = completePersister.completeOnStockReserved(event.eventId(), event);
+            switch (result) {
+                case COMPLETED -> log.info("Saga {} COMPLETED (stock reserved), OrderCompleted queued",
+                        event.sagaInstanceId());
+                case SKIPPED_DUPLICATE_EVENT -> log.info("StockReserved duplicate eventId={}", event.eventId());
+                case SKIPPED_UNKNOWN_SAGA -> log.warn("StockReserved for unknown saga={}", event.sagaInstanceId());
+                case SKIPPED_INVALID_STATE -> log.info("Saga {} not in AWAITING_STOCK, skipped", event.sagaInstanceId());
+                case SKIPPED_NO_ACTIVE_STEP -> log.warn("No active RESERVE_STOCK step for saga {}", event.sagaInstanceId());
+            }
+        } catch (DataIntegrityViolationException ex) {
+            log.info("Race lost on saga complete saga={}", event.sagaInstanceId());
+        }
+    }
+
+    public void onStockReservationFailed(InventoryEvents.StockReservationFailed event) {
+        try {
+            SagaCompensatePersister.Result result = compensatePersister.compensateOnStockReservationFailed(event.eventId(), event);
+            switch (result) {
+                case COMPENSATION_STARTED -> log.info("Saga {} COMPENSATING (stock failed), RefundPayment queued",
+                        event.sagaInstanceId());
+                case SKIPPED_DUPLICATE_EVENT -> log.info("StockReservationFailed duplicate eventId={}", event.eventId());
+                case SKIPPED_UNKNOWN_SAGA -> log.warn("StockReservationFailed for unknown saga={}", event.sagaInstanceId());
+                case SKIPPED_INVALID_STATE -> log.info("Saga {} not in AWAITING_STOCK for compensation, skipped", event.sagaInstanceId());
+                case SKIPPED_MISSING_PAYMENT_ID -> log.error("Saga {} MANUAL_INTERVENTION — paymentId missing, manual refund required",
+                        event.sagaInstanceId());
+            }
+        } catch (DataIntegrityViolationException ex) {
+            log.info("Race lost on saga compensate saga={}", event.sagaInstanceId());
         }
     }
 }

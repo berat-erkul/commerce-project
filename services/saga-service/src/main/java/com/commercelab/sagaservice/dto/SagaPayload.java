@@ -30,6 +30,7 @@ public class SagaPayload {
     private List<OrderItemSnapshot> items = new ArrayList<>();
 
     private String paymentIntentId;
+    private UUID paymentId;
     private UUID reservationId;
 
     @Getter
