@@ -1,32 +1,47 @@
 # SESSION HANDOFF — commerce-lab orchestrator saga (M3-extended)
 
-**Son güncelleme:** 2026-05-17
-**Faz/Hafta:** Faz 1 / Hafta 2 — Gün 1 sonu (Task #3 tamam, Task #4 sırada)
+**Son güncelleme:** 2026-05-18
+**Faz/Hafta:** Faz 1 / Hafta 2 — Gün 1 (Task #4 mid-way: boilerplate done, StockReservationService kaldı)
 **Otoriter referanslar:** `docs/adr/0001-saga-orchestration-via-dedicated-service.md` + `libs/common-events/*.java`
 
 ---
 
 ## ⚡ NEXT — sıradaki ilk eylem
 
-**Task:** #4 (pending) — `inventory-service` implementasyonu. Saga-service kolu (Task #3) tamamen kapandı; inventory-service şu an saga'nın bastığı `ReserveStock` komutlarını tüketmiyor → uçtan uca akış kilitli.
+**Task:** #4 devam — inventory-service **boilerplate katmanı bitti** (UNCOMMITTED), `StockReservationService` (business logic) + `InventoryCommandsListener` kaldı.
 
-**Yazılacaklar (kesin liste):**
+### ❗ İLK İŞ: UNCOMMITTED diff'i Berat'a yeniden anlat
+Son session sonunda Berat "yarın bana tekrar anlat" dedi. Yeni session'da Berat'a şu uncommitted dosyaları **flow + amaç + neden** ile anlat (oturmadı tam, tekrar açıklama istendi):
+
+- `services/inventory-service/src/main/resources/db/migration/V2__reservation_uniqueness_per_product.sql` — UNIQUE constraint (saga_instance_id) → (saga_instance_id, product_id) — multi-item order desteği
+- `entity/{InventoryItem, StockReservation, OutboxEvent, ProcessedEvent}.java` — JPA mapping (V1 + V2 schema'ya göre)
+- `repo/{IInventoryItemRepository (@Lock PESSIMISTIC_WRITE findByProductIdForUpdate), IStockReservationRepository (findBySagaInstanceIdAndProductId K2), IOutboxEventRepository, IProcessedEventRepository (insertIfAbsent ON CONFLICT)}.java`
+- `service/OutboxFactory.java` — saga-service kopyası, header standardı (`saga-instance-id`, `event-type`)
+- `config/Kafka{Producer,Consumer}Config.java` — saga-service kopyası (acks=all, idempotent, MANUAL_IMMEDIATE)
+- `worker/OutboxPublisher.java` — saga-service kopyası (@Scheduled polling)
+- `InventoryServiceApplication.java` — `@EnableScheduling` eklendi
+
+Berat anladıktan sonra: **commit at**, sonra StockReservationService'e geç.
+
+### Geri kalan iş (Task #4):
 | Dosya | Sorumluluğu |
 |---|---|
-| `inventory-service/entity/{Stock,Reservation,OutboxEvent,ProcessedEvent}.java` | JPA layer (mevcut V1 schema'ya göre) |
-| `inventory-service/repo/*.java` | 4 repo (Stock pessimistic findByProductIdForUpdate) |
-| `inventory-service/listener/InventoryCommandsListener.java` | `inventory.commands` consume; header discriminator (ReserveStock / ReleaseStock) |
-| `inventory-service/service/StockReservationService.java` | pessimistic lock per productId + atomic decrement + reservation row + outbox event |
-| `inventory-service/service/OutboxFactory.java` | saga-service'inkiyle aynı standart (event-type + saga-instance-id header) |
-| `inventory-service/worker/OutboxPublisher.java` | saga-service patron — kopyala/sadeleştir |
-| `inventory-service/config/Kafka{Producer,Consumer}Config.java` | aynı template (acks=all, idempotent, MANUAL_IMMEDIATE) |
+| `inventory-service/service/StockReservationService.java` | pessimistic lock per productId + atomic decrement + reservation row + outbox event (TÜM ITEM'LAR atomik, biri yetersizse rollback + StockReservationFailed) |
+| `inventory-service/listener/InventoryCommandsListener.java` | `inventory.commands` consume; header discriminator (ReserveStock / ReleaseStock-stub Gün 1) + manual ack |
 
-**Kilitli kararlar:**
-1. **Pessimistic lock per `productId`** — concurrent reservation race koruması. `SELECT ... WHERE product_id = ? FOR UPDATE`.
-2. **Stock decrement atomic with reservation insert** — tek tx içinde stock UPDATE + reservation INSERT + outbox INSERT.
-3. **Yetersiz stok = StockReservationFailed event** (exception değil, normal akış). Saga-service compensation tetikleyecek (zaten yazıldı: `SagaCompensatePersister`).
-4. **Idempotency 2-katmanlı yine:** K1 processed_events + K2 `reservations.saga_instance_id` UNIQUE constraint.
-5. **Header standardı zorunlu** — saga-service header'a göre discriminator yapıyor. ReserveStock'a `event-type=StockReserved` veya `StockReservationFailed` header'ı koymak şart.
+**Berat'ın karar vermesi gereken 5 nokta (StockReservationService için):**
+1. Tek `reservationId` event'te (item başına ayrı değil) — onay bekleniyor
+2. Atomicity: hepsi-veya-hiçbiri (biri yetersizse rollback + Failed event) — onay bekleniyor
+3. K1 sonra K2 sırası: önce processed_events check, sonra reservation duplicate check (varsa aynı reservationId reuse → idempotent re-emit StockReserved)
+4. Stok kontrolü: `availableQuantity >= requestedQuantity` (reserved counter ayrı bookkeeping)
+5. Stok düşürme: `available -= qty; reserved += qty` (endüstri standardı)
+
+**Kilitli kararlar (V1):**
+1. **Pessimistic lock per `productId`** — `findByProductIdForUpdate` JPQL @Lock(PESSIMISTIC_WRITE).
+2. **Stock decrement atomic with reservation insert** — tek `@Transactional` içinde.
+3. **Yetersiz stok = StockReservationFailed event** (exception değil).
+4. **Idempotency 2-katmanlı:** K1 processed_events + K2 `stock_reservations UNIQUE(saga_instance_id, product_id)` (V2 sonrası).
+5. **Header standardı zorunlu** — OutboxFactory bunu zaten halletti.
 
 ---
 
@@ -78,10 +93,13 @@ saga-service           Task #1 ✅ JPA layer (entity, enum, repo, dto)
                        Task #2 ✅ Kafka config + OutboxPublisher (with headers)
                        Task #3 ✅ 3 listener + 5 persister + state machine kablolu
 
-inventory-service      V1 schema + Application class only
-                                  ↓ SİZ BURADAYSINIZ ↓
-                       YAPILACAK (Task #4): entity, repo, ReserveStock listener,
-                       pessimistic stock service, EventPublisher poller
+inventory-service      V1 schema ✅  V2 migration ✅ (UNIQUE per saga+product)
+                       Entity (4) ✅  Repo (4) ✅  OutboxFactory ✅
+                       Kafka{Producer,Consumer}Config ✅  OutboxPublisher ✅
+                       @EnableScheduling ✅
+                                  ↓ SİZ BURADAYSINIZ ↓ (UNCOMMITTED)
+                       YAPILACAK: StockReservationService (business logic) +
+                       InventoryCommandsListener (transport)
 
 payment-service        Yok
                        YAPILACAK (Task #5 STUB Gün 1; Task #8 gerçek Stripe Gün 2)
@@ -228,30 +246,37 @@ Bu doc memory + git history dışında **session-arası bağlamın tek kaynağı
 
 ## 🚀 BOOTSTRAP PROMPT — yeni session'a yapıştır
 
-`docs/SESSION-PROMPT.md` dosyasında da kopyası var (bağımsız, handoff güncellenince orası da güncellensin). Aşağı kopyalıyorum kolay erişim için:
-
 ```
-~/Desktop/commerce-project — commerce-lab orchestrator saga (M3-extended), Faz 1/Hafta 2.
+~/Desktop/commerce-project — commerce-lab orchestrator saga, Faz 1/Hafta 2, Gün 1.
+Task #4 mid-way: inventory-service boilerplate UNCOMMITTED, business logic henüz yok.
 
 Sırayla yap:
-1. SESSION-HANDOFF.md'yi oku — özellikle ⚡ NEXT, 🚫 DO NOT, 🎯 SCOPE DECISIONS, 🪤 KEY LEARNINGS bölümleri.
-2. docs/adr/0001-*.md ve libs/common-events/{Order,Payment,Inventory}Events.java tara — wire kontratları otoriter.
-3. saga-service'in mevcut dosya ağacını gör (handoff 📂 FILE INVENTORY).
-4. TaskList'i çek; #3 in_progress olduğunu doğrula.
+1. SESSION-HANDOFF.md'yi oku — özellikle ⚡ NEXT (uncommitted diff listesi orada).
+2. `git status` + `git diff --stat` — uncommitted dosyaları kendi gözünle gör.
+3. libs/common-events/InventoryEvents.java + OrderItem.java tara — ReserveStock kontratı.
+4. saga-service/.../service/SagaCompensatePersister.java oku — compensation tarafının
+   inventory'den ne beklediği orada (StockReservationFailed → RefundPayment).
 
-Sonra bana TEK MESAJDA şunları ver (3 cevap, 1 plan):
-A) Postgres aborted-tx trap'i 1 cümle + commerce-project'teki bypass kuralımız.
-B) Common-events Saf TCC mi Seçenek B mi destekliyor; saga forward chain hangi 3 step?
-C) PaymentFailed → OrderCancelled neden Gün 1'de basılır (compensation değil de)?
-PLAN: PaymentEventsListener task'ı için somut 5 maddelik uygulama planı (dosya isimleri + sıralama). Handoff ⚡ NEXT'tekiyle tutarlı olsun.
+Sonra bana ÖNCE şunu ver:
+A) Uncommitted dosyaların DETAYLI WALKTHROUGH'u (Berat'a tekrar anlatılacak —
+   son session sonunda "yarın tekrar anlat" dedi, oturmadı). Her dosya için:
+   - Hangi katman (transport / persistence / business / config)
+   - Ne işe yarıyor (1-2 cümle)
+   - Bu sınıf olmasa ne olurdu (özellikle pessimistic lock, ON CONFLICT, outbox factory)
+   - Flow diagramı: ReserveStock geldikten sonra zincir nasıl işleyecek
 
-Cevabın hatalıysa düzelt; planın handoff ile çelişiyorsa benim açıklamamı bekle. Sonra Task #3'ü #3 ID üzerinden in_progress tutarak devam et — Claude yazar + anlatır modu.
+Berat anladığını söyleyince:
+B) Commit mesajını öner (kısa subject + 3-5 satır body, handoff stili).
+C) StockReservationService 5-nokta karar tablosunu Berat'a sun (handoff ⚡ NEXT
+   bölümünde liste var); onay alınca pseudo-comment iste, sonra Spring Boot'a çevir.
 
 Kurallar:
-- Her task bitince commit mesajı öner (handoff'taki stil — kısa subject + 3-5 satır body).
-- Her task bitince SESSION-HANDOFF.md'nin LIVING DOCUMENT bölümlerini güncelle.
-- 🚫 DO NOT listesindeki şeyleri yapma; karar değişikliği gerekirse benden onay al.
-- Berat'ın itirazlarına ciddiye al — geçmişte 2 mimari refactor onun yakaladığı sorunlardan çıktı.
+- Her task bitince commit mesajı öner.
+- Her task bitince SESSION-HANDOFF.md LIVING DOCUMENT bölümlerini güncelle.
+- 🚫 DO NOT listesindeki şeyleri yapma.
+- Business logic Berat pseudo-comment yazar, sen Spring Boot'a çevirirsin
+  [[feedback_code_handoff_style]].
+- Berat'ın itirazlarını ciddiye al.
 ```
 
 ---
