@@ -25,6 +25,7 @@ public class SagaOrchestrator {
     private final SagaFailPersister failPersister;
     private final SagaCompletePersister completePersister;
     private final SagaCompensatePersister compensatePersister;
+    private final SagaCancelPersister cancelPersister;
 
     public void startOrderPlacementSaga(OrderEvents.OrderCreated event) {
         SagaStartFactory.SagaStartAggregate agg = startFactory.build(event);
@@ -70,6 +71,21 @@ public class SagaOrchestrator {
             }
         } catch (DataIntegrityViolationException ex) {
             log.info("Race lost on saga fail saga={}", event.sagaInstanceId());
+        }
+    }
+
+    public void onPaymentRefunded(PaymentEvents.PaymentRefunded event) {
+        try {
+            SagaCancelPersister.Result result = cancelPersister.cancelOnPaymentRefunded(event.eventId(), event);
+            switch (result) {
+                case CANCELLED -> log.info("Saga {} CANCELLED (payment refunded), OrderCancelled queued",
+                        event.sagaInstanceId());
+                case SKIPPED_DUPLICATE_EVENT -> log.info("PaymentRefunded duplicate eventId={}", event.eventId());
+                case SKIPPED_UNKNOWN_SAGA -> log.warn("PaymentRefunded for unknown saga={}", event.sagaInstanceId());
+                case SKIPPED_INVALID_STATE -> log.info("Saga {} not in COMPENSATING for cancel, skipped", event.sagaInstanceId());
+            }
+        } catch (DataIntegrityViolationException ex) {
+            log.info("Race lost on saga cancel saga={}", event.sagaInstanceId());
         }
     }
 

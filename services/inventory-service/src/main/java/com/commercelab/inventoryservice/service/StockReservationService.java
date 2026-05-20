@@ -48,6 +48,8 @@ public class StockReservationService {
 
     public enum Result { RESERVED, SKIPPED_DUPLICATE, SKIPPED_ALL_ALREADY_RESERVED }
 
+    public enum ReleaseResult { RELEASED, SKIPPED_DUPLICATE, SKIPPED_NOTHING_TO_RELEASE }
+
     /**
      * Reserve flow — tek tx. Yetersiz stokta InsufficientStockException → tx rollback;
      * listener ayrı tx'te emitFailed çağırır.
@@ -169,5 +171,67 @@ public class StockReservationService {
                 cmd.sagaInstanceId()
         );
         outboxRepo.save(outbox);
+    }
+
+    /**
+     * ReleaseStock compensation — rezerve edilen stoğu geri ver (reserved→available).
+     * Saga'nın tüm reservation satırlarını sagaInstanceId üzerinden tarar.
+     * NOT: Mevcut 2-adımlı zincirde tetiklenmiyor (stoktan sonra adım yok); simetri
+     * için ve ileride çok-adımlı saga'da kullanılmak üzere hazır.
+     */
+    @Transactional
+    public ReleaseResult release(InventoryEvents.ReleaseStock cmd) {
+        OffsetDateTime now = OffsetDateTime.now();
+
+        // K1 — processed_events guard.
+        int inserted = processedRepo.insertIfAbsent(
+                cmd.commandId(), CONSUMER_NAME, TOPIC_INVENTORY_COMMANDS, now);
+        if (inserted == 0) {
+            log.info("K1 hit: release commandId={} already processed, skipping", cmd.commandId());
+            return ReleaseResult.SKIPPED_DUPLICATE;
+        }
+
+        List<StockReservation> rows = reservationRepo.findBySagaInstanceId(cmd.sagaInstanceId());
+        int released = 0;
+        for (StockReservation row : rows) {
+            if (!"RESERVED".equals(row.getStatus())) {
+                continue;  // zaten RELEASED/CONFIRMED — idempotent skip
+            }
+            InventoryItem inv = invRepo.findByProductIdForUpdate(row.getProductId())
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Reservation references unknown product: " + row.getProductId()));
+            inv.setAvailableQuantity(inv.getAvailableQuantity() + row.getQuantity());
+            inv.setReservedQuantity(inv.getReservedQuantity() - row.getQuantity());
+            inv.setUpdatedAt(now);
+
+            row.setStatus("RELEASED");
+            row.setReleasedAt(now);
+            released++;
+        }
+
+        if (released == 0) {
+            log.warn("Nothing to release for saga={}, no StockReleased emitted", cmd.sagaInstanceId());
+            return ReleaseResult.SKIPPED_NOTHING_TO_RELEASE;
+        }
+
+        InventoryEvents.StockReleased event = new InventoryEvents.StockReleased(
+                UUID.randomUUID(),
+                cmd.sagaInstanceId(),
+                cmd.reservationId(),
+                Instant.now()
+        );
+        OutboxEvent outbox = outboxFactory.build(
+                event.eventId(),
+                "StockReservation",
+                cmd.sagaInstanceId(),
+                "StockReleased",
+                TOPIC_INVENTORY_EVENTS,
+                event,
+                cmd.sagaInstanceId()
+        );
+        outboxRepo.save(outbox);
+
+        log.info("Released {} reservation(s) for saga={}", released, cmd.sagaInstanceId());
+        return ReleaseResult.RELEASED;
     }
 }

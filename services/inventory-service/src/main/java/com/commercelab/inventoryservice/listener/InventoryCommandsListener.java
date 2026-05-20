@@ -44,8 +44,7 @@ public class InventoryCommandsListener {
         try {
             switch (eventType) {
                 case "ReserveStock" -> handleReserve(record);
-                case "ReleaseStock" -> log.warn(
-                        "ReleaseStock received but is stub on Day 1, ignoring offset={}", record.offset());
+                case "ReleaseStock" -> handleRelease(record);
                 default -> log.warn("Unknown event-type='{}' on inventory.commands offset={}",
                         eventType, record.offset());
             }
@@ -74,6 +73,14 @@ public class InventoryCommandsListener {
                     cmd.commandId(), cmd.sagaInstanceId(), ex.getMessage());
             reservationService.emitFailed(cmd, ex.getMessage());
         }
+    }
+
+    private void handleRelease(ConsumerRecord<String, String> record) throws JsonProcessingException {
+        InventoryEvents.ReleaseStock cmd = objectMapper.readValue(
+                record.value(), InventoryEvents.ReleaseStock.class);
+        StockReservationService.ReleaseResult result = reservationService.release(cmd);
+        log.info("ReleaseStock commandId={} sagaId={} result={}",
+                cmd.commandId(), cmd.sagaInstanceId(), result);
     }
 
     private static String readHeader(ConsumerRecord<String, String> record, String name) {

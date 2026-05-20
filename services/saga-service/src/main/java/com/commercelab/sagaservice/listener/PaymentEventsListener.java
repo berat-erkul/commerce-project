@@ -40,7 +40,7 @@ public class PaymentEventsListener {
             switch (type) {
                 case "PaymentCompleted" -> orchestrator.onPaymentCompleted(parse(record.value(), PaymentEvents.PaymentCompleted.class));
                 case "PaymentFailed"    -> orchestrator.onPaymentFailed(parse(record.value(), PaymentEvents.PaymentFailed.class));
-                case "PaymentRefunded"  -> log.debug("Ignoring PaymentRefunded on Day 1 (compensation Day 2)");
+                case "PaymentRefunded"  -> orchestrator.onPaymentRefunded(parse(record.value(), PaymentEvents.PaymentRefunded.class));
                 default                 -> log.debug("Ignoring unknown event-type={} on payment.events", type);
             }
 

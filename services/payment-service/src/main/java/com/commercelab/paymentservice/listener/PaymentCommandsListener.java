@@ -2,6 +2,7 @@ package com.commercelab.paymentservice.listener;
 
 import com.commercelab.events.PaymentEvents;
 import com.commercelab.paymentservice.service.PaymentProcessingService;
+import com.commercelab.paymentservice.service.RefundService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -28,6 +29,7 @@ public class PaymentCommandsListener {
     private static final String EVENT_TYPE_HEADER = "event-type";
 
     private final PaymentProcessingService processingService;
+    private final RefundService refundService;
     private final ObjectMapper objectMapper;
 
     @KafkaListener(topics = "payment.commands", containerFactory = "kafkaListenerContainerFactory")
@@ -43,8 +45,7 @@ public class PaymentCommandsListener {
         try {
             switch (eventType) {
                 case "ProcessPayment" -> handleProcess(record);
-                case "RefundPayment" -> log.warn(
-                        "RefundPayment received but is stub on Day 1, ignoring offset={}", record.offset());
+                case "RefundPayment" -> handleRefund(record);
                 default -> log.warn("Unknown event-type='{}' on payment.commands offset={}",
                         eventType, record.offset());
             }
@@ -66,6 +67,14 @@ public class PaymentCommandsListener {
                 record.value(), PaymentEvents.ProcessPayment.class);
         PaymentProcessingService.Result result = processingService.process(cmd);
         log.info("ProcessPayment commandId={} sagaId={} result={}",
+                cmd.commandId(), cmd.sagaInstanceId(), result);
+    }
+
+    private void handleRefund(ConsumerRecord<String, String> record) throws JsonProcessingException {
+        PaymentEvents.RefundPayment cmd = objectMapper.readValue(
+                record.value(), PaymentEvents.RefundPayment.class);
+        RefundService.Result result = refundService.refund(cmd);
+        log.info("RefundPayment commandId={} sagaId={} result={}",
                 cmd.commandId(), cmd.sagaInstanceId(), result);
     }
 

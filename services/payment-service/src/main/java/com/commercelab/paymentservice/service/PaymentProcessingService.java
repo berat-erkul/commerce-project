@@ -17,14 +17,14 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * ProcessPayment komutunu işleyen business katmanı — Gün 1 STUB.
+ * ProcessPayment komutunu işleyen business katmanı — STUB.
  * <ul>
- *   <li>Gün 1: gerçek Stripe YOK. Her ödeme anında başarılı (status=CAPTURED).</li>
- *   <li>Idempotency K1: processed_events ON CONFLICT DO NOTHING (Postgres aborted-tx trap'ten kaçınma).</li>
+ *   <li>Stripe KASITLI atlandı — ödeme "başarılı alınmış gibi" işlenir.
+ *       Gerçek Stripe entegrasyonu ayrı bir haftaya ertelendi.</li>
+ *   <li>Idempotency K1: processed_events ON CONFLICT DO NOTHING (Postgres aborted-tx trap).</li>
  *   <li>Idempotency K2: payments UNIQUE(saga_instance_id) — findBySagaInstanceId guard.</li>
- *   <li>Fail path yok (karar #1): STUB her zaman PaymentCompleted üretir.</li>
+ *   <li>Fail path yok: STUB her zaman PaymentCompleted üretir.</li>
  * </ul>
- * Gün 2 (Task #8) gerçek Stripe Seçenek B (authorize+capture) buraya gelecek.
  */
 @Slf4j
 @Service
@@ -42,9 +42,6 @@ public class PaymentProcessingService {
 
     public enum Result { COMPLETED, SKIPPED_DUPLICATE, SKIPPED_ALREADY_PAID }
 
-    /**
-     * Process flow — tek tx. Gün 1 STUB: her zaman başarılı.
-     */
     @Transactional
     public Result process(PaymentEvents.ProcessPayment cmd) {
         OffsetDateTime now = OffsetDateTime.now();
@@ -57,7 +54,7 @@ public class PaymentProcessingService {
             return Result.SKIPPED_DUPLICATE;
         }
 
-        // K2 — bu saga için payment zaten var mı? Varsa re-emit yok (inventory kalıbı).
+        // K2 — bu saga için payment zaten var mı? Varsa re-emit yok.
         Optional<Payment> existing = paymentRepo.findBySagaInstanceId(cmd.sagaInstanceId());
         if (existing.isPresent()) {
             log.warn("K2 hit: saga={} already has payment, no PaymentCompleted re-emitted",
@@ -65,7 +62,7 @@ public class PaymentProcessingService {
             return Result.SKIPPED_ALREADY_PAID;
         }
 
-        // STUB: anında başarılı ödeme. paymentId service-side üretilir (karar #3).
+        // STUB: ödeme başarılı alınmış gibi. paymentId service-side üretilir.
         UUID paymentId = UUID.randomUUID();
         Payment payment = Payment.builder()
                 .id(paymentId)
@@ -73,7 +70,7 @@ public class PaymentProcessingService {
                 .sagaInstanceId(cmd.sagaInstanceId())
                 .amount(cmd.amount())
                 .currency(cmd.currency())
-                .stripePaymentIntentId(null)   // Gün 2 gerçek Stripe doldurur
+                .stripePaymentIntentId(null)   // gerçek Stripe ayrı haftada
                 .status("CAPTURED")            // Seçenek B: authorize+capture beraber
                 .createdAt(now)
                 .capturedAt(now)
@@ -86,7 +83,7 @@ public class PaymentProcessingService {
                 cmd.orderId(),
                 paymentId,
                 cmd.amount(),
-                null,                          // stripePaymentIntentId — Gün 2
+                null,                          // stripePaymentIntentId — ayrı haftada
                 Instant.now()
         );
         OutboxEvent outbox = outboxFactory.build(
