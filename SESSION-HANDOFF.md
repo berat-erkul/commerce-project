@@ -1,47 +1,83 @@
 # SESSION HANDOFF — commerce-lab orchestrator saga (M3-extended)
 
-**Son güncelleme:** 2026-05-18
-**Faz/Hafta:** Faz 1 / Hafta 2 — Gün 1 (Task #4 mid-way: boilerplate done, StockReservationService kaldı)
+**Son güncelleme:** 2026-05-20
+**Faz/Hafta:** Faz 1 / Hafta 2 — Gün 1 (Task #5 ✅; sırada Task #6 order-service terminal listener)
 **Otoriter referanslar:** `docs/adr/0001-saga-orchestration-via-dedicated-service.md` + `libs/common-events/*.java`
 
 ---
 
 ## ⚡ NEXT — sıradaki ilk eylem
 
-**Task:** #4 devam — inventory-service **boilerplate katmanı bitti** (UNCOMMITTED), `StockReservationService` (business logic) + `InventoryCommandsListener` kaldı.
+**Task:** #6 — order-service terminal listener (saga'nın bastığı OrderCompleted / OrderCancelled'ı order-service tüketsin, sipariş durumunu güncellesin). Happy-path zincirinin **son halkası** — saga COMPLETED/FAILED olunca order-service haberdar olmalı (L4 üçüncü altın kural: cross-service state = outbox+event, polling yok).
 
-### ❗ İLK İŞ: UNCOMMITTED diff'i Berat'a yeniden anlat
-Son session sonunda Berat "yarın bana tekrar anlat" dedi. Yeni session'da Berat'a şu uncommitted dosyaları **flow + amaç + neden** ile anlat (oturmadı tam, tekrar açıklama istendi):
+### Hedef sözleşme (libs/common-events otoriter — önce TARA)
+- IN: `order.events` ← saga-service üretir: `OrderCompleted(...)`, `OrderCancelled(...)`.
+- order-service şu an SADECE üretici (OrderCreated). Bu task'ta ilk defa **consumer** rolü kazanıyor.
+- ⚠️ order-service'in `OrderEvents.java` kontratını + mevcut Order entity/status alanını oku — durum kolonu hangi değerleri alıyor (CREATED / COMPLETED / CANCELLED?).
 
-- `services/inventory-service/src/main/resources/db/migration/V2__reservation_uniqueness_per_product.sql` — UNIQUE constraint (saga_instance_id) → (saga_instance_id, product_id) — multi-item order desteği
-- `entity/{InventoryItem, StockReservation, OutboxEvent, ProcessedEvent}.java` — JPA mapping (V1 + V2 schema'ya göre)
-- `repo/{IInventoryItemRepository (@Lock PESSIMISTIC_WRITE findByProductIdForUpdate), IStockReservationRepository (findBySagaInstanceIdAndProductId K2), IOutboxEventRepository, IProcessedEventRepository (insertIfAbsent ON CONFLICT)}.java`
-- `service/OutboxFactory.java` — saga-service kopyası, header standardı (`saga-instance-id`, `event-type`)
-- `config/Kafka{Producer,Consumer}Config.java` — saga-service kopyası (acks=all, idempotent, MANUAL_IMMEDIATE)
-- `worker/OutboxPublisher.java` — saga-service kopyası (@Scheduled polling)
-- `InventoryServiceApplication.java` — `@EnableScheduling` eklendi
+### Berat onayı gereken noktalar (Task #6 başlamadan — koda geçmeden sun)
+1. order-service'te idempotency: processed_events tablosu var mı, yoksa K1 katmanını burada mı kuruyoruz?
+2. Order status update: mevcut enum/string ne, COMPLETED/CANCELLED değerleri ekli mi?
+3. Listener Kafka config: order-service'te zaten consumer infra var mı, yoksa inventory/payment kalıbı kopya mı?
+4. order-service publisher header desteği: handoff'ta "Gün 3 cleanup" deniyor — bu task'ta order.events'i lenient mi dinleyeceğiz (saga gibi) yoksa header standardı şimdi mi geliyor?
 
-Berat anladıktan sonra: **commit at**, sonra StockReservationService'e geç.
+### ❗ Disiplin notları (oturmuş — Task #4/#5'ten taşınan)
+- ON CONFLICT idempotent INSERT — JPA save() değil (L1 Postgres aborted-tx trap).
+- @Transactional içinde Kafka I/O yok (OutboxPublisher mevcut pattern; Task #12 Gün 3'te refactor).
+- Header standardı: `saga-instance-id` + `event-type` (OutboxFactory zorlar).
+- Manual ack only-after-success (K1/K2 duplicate'i yutar).
+- Factory/Persister split UYGULAMA — tek-akış servislerde OutboxFactory + service tek dosyada yeterli (saga'ya özgü disiplin).
+- **Kod stili kalıcı değişti:** business logic'i artık Claude doğrudan yazıyor (Task #4'ten beri; #5'te Berat "kalıcılaşsın" onayı verdi). Pseudo-comment çevirisi kuralı emekli — [[feedback_code_handoff_style]].
 
-### Geri kalan iş (Task #4):
-| Dosya | Sorumluluğu |
-|---|---|
-| `inventory-service/service/StockReservationService.java` | pessimistic lock per productId + atomic decrement + reservation row + outbox event (TÜM ITEM'LAR atomik, biri yetersizse rollback + StockReservationFailed) |
-| `inventory-service/listener/InventoryCommandsListener.java` | `inventory.commands` consume; header discriminator (ReserveStock / ReleaseStock-stub Gün 1) + manual ack |
+---
 
-**Berat'ın karar vermesi gereken 5 nokta (StockReservationService için):**
-1. Tek `reservationId` event'te (item başına ayrı değil) — onay bekleniyor
-2. Atomicity: hepsi-veya-hiçbiri (biri yetersizse rollback + Failed event) — onay bekleniyor
-3. K1 sonra K2 sırası: önce processed_events check, sonra reservation duplicate check (varsa aynı reservationId reuse → idempotent re-emit StockReserved)
-4. Stok kontrolü: `availableQuantity >= requestedQuantity` (reserved counter ayrı bookkeeping)
-5. Stok düşürme: `available -= qty; reserved += qty` (endüstri standardı)
+## ✅ TAMAMLANAN — Task #5 (Gün 1)
 
-**Kilitli kararlar (V1):**
-1. **Pessimistic lock per `productId`** — `findByProductIdForUpdate` JPQL @Lock(PESSIMISTIC_WRITE).
-2. **Stock decrement atomic with reservation insert** — tek `@Transactional` içinde.
-3. **Yetersiz stok = StockReservationFailed event** (exception değil).
-4. **Idempotency 2-katmanlı:** K1 processed_events + K2 `stock_reservations UNIQUE(saga_instance_id, product_id)` (V2 sonrası).
-5. **Header standardı zorunlu** — OutboxFactory bunu zaten halletti.
+**payment-service STUB tamam.** ProcessPayment → PaymentCompleted zinciri çalışır durumda. `mvn compile` SUCCESS.
+
+**⚠️ Handoff düzeltmesi:** payment-service "HİÇ YOK" DEĞİLDİ — Berat 12-14 May'da iskelet kurmuş (pom + Application + application.yml + V1__init.sql). Handoff'taki "8084 / paymentdb 5436" YANLIŞTI; gerçek = **8082 / 5434** (docker-compose `postgres-payment`; 5436 aslında sagadb). Mevcut korundu.
+
+**V1 şema (Berat'ın, dokunulmadı):** payments (Stripe-ready: stripe_payment_intent_id, captured_at) + refunds + idempotency_keys + outbox_events + processed_events. Karar #2 "tam Stripe-ready" zaten mevcut şemayla örtüştü → yeni migration yazılmadı.
+
+**Düzeltmeler:**
+- `application.yml` Kafka portu **9094 → 9092** (DO NOT list'teki fix payment'a hiç uygulanmamış — bug'dı).
+- `PaymentServiceApplication`'a **@EnableScheduling** eklendi (OutboxPublisher @Scheduled için şarttı).
+
+**Boilerplate (inventory kopyası):** entity (Payment, OutboxEvent, ProcessedEvent), repo (IPaymentRepository.findBySagaInstanceId + IOutboxEventRepository.findPendingBatch + IProcessedEventRepository.insertIfAbsent), OutboxFactory, Kafka{Producer,Consumer}Config, OutboxPublisher.
+
+**Business + transport (doğrudan kod — kalıcı stil):**
+- `service/PaymentProcessingService.java` — tek @Transactional `process()`: K1 insertIfAbsent → K2 findBySagaInstanceId skip → Payment row (status=CAPTURED, paymentId=randomUUID, stripePaymentIntentId=null, capturedAt=now) → PaymentCompleted outbox. **Fail path YOK** (karar #1: STUB her zaman başarılı). InsufficientStock-tarzı iki-tx pattern burada gereksiz.
+- `listener/PaymentCommandsListener.java` — event-type discriminator (ProcessPayment / RefundPayment-stub-Gün-1). Manual ack only-after-success. DataIntegrityViolation = race lost, log + ack. Beklenmeyen exception = ack ETME (redeliver).
+
+**Kilitli 4 karar (Berat onayladı):**
+1. STUB her zaman PaymentCompleted; fail-sim YOK; PaymentFailedException YOK. PaymentFailed→FAILED dalı Gün 2 #10 smoke'unda test edilecek.
+2. `payments` tam Stripe-ready (mevcut V1 zaten öyle).
+3. paymentId service-side `UUID.randomUUID()`; PaymentCompleted payload'ında döner; SagaAdvancePersister okuyup payload'a yazar.
+4. RefundPayment Gün 1 **tam stub** (log + ack, DB iş yok). Gerçek compensation Gün 2 #9/#10.
+
+**Sapma not:** Factory/Persister split payment'te de UYGULANMADI (tek-akış, Task #4 ile aynı gerekçe).
+
+---
+
+## ✅ TAMAMLANAN — Task #4 (Gün 1)
+
+**inventory-service M3 tamam.** ReserveStock zinciri uçtan uca çalışır durumda.
+
+**Boilerplate (commit 1):** V2 migration (UNIQUE per saga+product), 4 entity, 4 repo (pessimistic lock + ON CONFLICT), OutboxFactory, Kafka config, OutboxPublisher, @EnableScheduling.
+
+**Business + transport (commit 2):**
+- `service/StockReservationService.java` — tek @Transactional: K1 insertIfAbsent → productId-sıralı kilitleme → per-item K2 check + lock + decrement + reservation insert → outbox StockReserved. Insufficient stock = InsufficientStockException → tx rollback. `emitFailed()` ayrı tx'te StockReservationFailed yazar.
+- `listener/InventoryCommandsListener.java` — event-type header discriminator (ReserveStock / ReleaseStock-stub-Gün-1). Manual ack only-after-success. DataIntegrityViolation = race lost, log + ack. Beklenmeyen exception = ack ETME (Kafka redeliver).
+- `exception/InsufficientStockException.java` — RuntimeException (Spring rollback için).
+
+**Kilitli 5 karar (Berat onayladı):**
+1. ReservationId saga-level (tek UUID event'te); DB row'ları sagaInstanceId üzerinden gruplanır, release sagaInstanceId ile çoğul tarar.
+2. Atomicity = iki tx: reserve (rollback'lenir), emitFailed (yeni tx'te commit).
+3. K1 hit → SKIPPED_DUPLICATE; K2 hit → item skip + reservedItems==0 ise re-emit YOK.
+4. Stok kontrolü: `availableQuantity >= requestedQuantity`.
+5. Decrement: `available -=, reserved +=, status=RESERVED`.
+
+**Sapma not:** Factory/Persister split inventory'de UYGULANMADI. Gerekçe: tek-akış servis, DB-free CPU iş yok (tüm akış pessimistic lock altında), OutboxFactory zaten event-build rolünü oynuyor. Saga-service'in 3-listener × 5-persister × 9-status karmaşıklığı yok. Disiplin pragmatizmi.
 
 ---
 
@@ -87,22 +123,29 @@ StockReservationFailed → COMPENSATING         (RefundPayment outbox — compen
 
 ```
 order-service          M1+M2 ✅ ──── üretiyor: OrderCreated → order.events
-                                     YAPILACAK (Task #6): OrderCompleted/Cancelled listener
+                                  ↓ SİZ BURADAYSINIZ ↓
+                       YAPILACAK (Task #6): OrderCompleted/Cancelled listener
+                       (saga'nın terminal event'lerini tüket, sipariş durumunu güncelle)
 
 saga-service           Task #1 ✅ JPA layer (entity, enum, repo, dto)
                        Task #2 ✅ Kafka config + OutboxPublisher (with headers)
                        Task #3 ✅ 3 listener + 5 persister + state machine kablolu
 
-inventory-service      V1 schema ✅  V2 migration ✅ (UNIQUE per saga+product)
-                       Entity (4) ✅  Repo (4) ✅  OutboxFactory ✅
-                       Kafka{Producer,Consumer}Config ✅  OutboxPublisher ✅
-                       @EnableScheduling ✅
-                                  ↓ SİZ BURADAYSINIZ ↓ (UNCOMMITTED)
-                       YAPILACAK: StockReservationService (business logic) +
-                       InventoryCommandsListener (transport)
+inventory-service      Task #4 ✅ — Reserve zinciri uçtan uca
+                       V1+V2 schema, 4 entity, 4 repo (pessimistic+ON CONFLICT),
+                       OutboxFactory, Kafka config, OutboxPublisher,
+                       StockReservationService (reserve + emitFailed iki tx),
+                       InventoryCommandsListener (event-type discriminator),
+                       InsufficientStockException
+                       EKSİK: ReleaseStock implement (Gün 2 Task #10)
 
-payment-service        Yok
-                       YAPILACAK (Task #5 STUB Gün 1; Task #8 gerçek Stripe Gün 2)
+payment-service        Task #5 ✅ — ProcessPayment → PaymentCompleted STUB zinciri
+                       V1 schema (Stripe-ready, Berat'ın), 3 entity, 3 repo,
+                       OutboxFactory, Kafka config, OutboxPublisher (@EnableScheduling fix),
+                       PaymentProcessingService (tek-tx STUB, fail path yok),
+                       PaymentCommandsListener (event-type discriminator, RefundPayment stub)
+                       Kafka port 9094→9092 fix
+                       EKSİK: gerçek Stripe Seçenek B (Gün 2 Task #8), RefundPayment impl (Gün 2 #9)
 ```
 
 **Tasks (TaskList ID'leri):** #1 ✅ #2 ✅ #3 ✅ #4–#13 pending. #6 = order-service Completed+Cancelled listener; #12 = DLQ + correlation + outbox publisher async refactor (önemli — IN_FLIGHT state burada eklenecek).
@@ -221,12 +264,27 @@ services/saga-service/
     └── worker/
         └── OutboxPublisher.java             ← @Scheduled (Day 3 async refactor)
 
-DAY 1 EKLENECEKLER (Task #3 devamı):
-    service/SagaAdvanceFactory.java
-    service/SagaAdvancePersister.java
-    service/SagaFailPersister.java
-    listener/PaymentEventsListener.java
-    listener/InventoryEventsListener.java
+(Task #3 dosyaları eklendi: SagaAdvanceFactory/Persister, SagaFailPersister,
+ PaymentEventsListener, InventoryEventsListener, SagaCompletePersister, SagaCompensatePersister)
+```
+
+### payment-service (Task #5 ✅)
+```
+services/payment-service/
+├── pom.xml                                  ← Stripe SDK dahil (Gün 2 için hazır)
+├── src/main/resources/
+│   ├── application.yml                      ← port 8082, db 5434, Kafka 9092 (fix), Stripe config
+│   └── db/migration/V1__init.sql            ← payments(Stripe-ready) + refunds + idempotency_keys + outbox + processed
+└── src/main/java/com/commercelab/paymentservice/
+    ├── PaymentServiceApplication.java        ← @EnableScheduling (eklendi)
+    ├── config/{KafkaProducerConfig, KafkaConsumerConfig}.java
+    ├── entity/{Payment, OutboxEvent, ProcessedEvent}.java   (Refund/idempotency entity YOK — Gün 2)
+    ├── repo/{IPaymentRepository, IOutboxEventRepository, IProcessedEventRepository}.java
+    ├── service/
+    │   ├── OutboxFactory.java
+    │   └── PaymentProcessingService.java     ← tek-tx STUB process(), fail path yok
+    ├── listener/PaymentCommandsListener.java ← event-type discriminator, RefundPayment stub
+    └── worker/OutboxPublisher.java           ← @Scheduled (Gün 3 async refactor)
 ```
 
 ---
