@@ -9,7 +9,11 @@ import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.util.backoff.ExponentialBackOff;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -38,12 +42,31 @@ public class KafkaConsumerConfig {
 
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, String> kafkaListenerContainerFactory(
-            ConsumerFactory<String, String> consumerFactory
+            ConsumerFactory<String, String> consumerFactory,
+            KafkaTemplate<String, Object> kafkaTemplate
     ) {
         ConcurrentKafkaListenerContainerFactory<String, String> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+        factory.setCommonErrorHandler(deadLetterErrorHandler(kafkaTemplate));
         return factory;
+    }
+
+    /**
+     * Retry-then-DLQ: 3 deneme (exponential backoff 1s×2, cap 10s), sonra <topic>.DLT.
+     * setCommitRecovered(true) = manual ack tuzağı; DLT'ye taşınan kaydın offset'i commit edilir.
+     * DataIntegrityViolation (race) listener'da ack'lendiği için buraya ulaşmaz.
+     */
+    private DefaultErrorHandler deadLetterErrorHandler(KafkaTemplate<String, Object> kafkaTemplate) {
+        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(kafkaTemplate);
+        ExponentialBackOff backOff = new ExponentialBackOff();
+        backOff.setInitialInterval(1000L);
+        backOff.setMaxAttempts(3);
+        backOff.setMultiplier(2.0);
+        backOff.setMaxInterval(10000L);
+        DefaultErrorHandler handler = new DefaultErrorHandler(recoverer, backOff);
+        handler.setCommitRecovered(true);
+        return handler;
     }
 }

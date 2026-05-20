@@ -56,8 +56,10 @@ public class OrderEventsListener {
             log.warn("Race lost on {} offset={}: {}", eventType, record.offset(), race.getMessage());
             ack.acknowledge();
         } catch (Exception ex) {
+            // ack ETME + rethrow → DefaultErrorHandler retry (backoff) sonra <topic>.DLT.
             log.error("Failed to process {} offset={}: {}",
                     eventType, record.offset(), ex.getMessage(), ex);
+            throw new RuntimeException(ex);
         }
     }
 

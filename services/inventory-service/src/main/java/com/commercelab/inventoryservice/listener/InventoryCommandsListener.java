@@ -55,9 +55,11 @@ public class InventoryCommandsListener {
             log.warn("Race lost on {} offset={}: {}", eventType, record.offset(), race.getMessage());
             ack.acknowledge();
         } catch (Exception ex) {
-            // ack ETME → Kafka mesajı redeliver eder. K1 sonraki tur'da yakalar.
+            // ack ETME + rethrow → DefaultErrorHandler retry (backoff) sonra <topic>.DLT.
+            // K1/K2 retry'da duplicate'i yutar.
             log.error("Failed to process {} offset={}: {}",
                     eventType, record.offset(), ex.getMessage(), ex);
+            throw new RuntimeException(ex);
         }
     }
 
