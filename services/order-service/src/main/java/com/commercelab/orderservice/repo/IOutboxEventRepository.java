@@ -2,26 +2,40 @@ package com.commercelab.orderservice.repo;
 
 import com.commercelab.orderservice.entity.OutboxEvent;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 
 @Repository
 public interface IOutboxEventRepository extends JpaRepository<OutboxEvent, UUID> {
 
-    // SKIP LOCKED: çoklu poller instance'ı aynı satıra takılmasın, kilitli olanı atlayıp ilerlesin.
-    // Composite index (status, created_at) bu sorgu için tasarlandı.
-    @Query(
-            value = "SELECT * FROM outbox_events " +
-                    "WHERE status = 'PENDING' " +
-                    "ORDER BY created_at ASC " +
-                    "LIMIT 100 " +
-                    "FOR UPDATE SKIP LOCKED",
-            nativeQuery = true
-    )
-    List<OutboxEvent> selectTop100PublishedFalseEvent();
+    /**
+     * Multi-instance claim: PENDING satırları kilitle, kilitliyi atla (SKIP LOCKED).
+     * Çağıran tx içinde bu satırları IN_FLIGHT yapar → başka poller PENDING sorgusunda görmez.
+     */
+    @Query(value = """
+            SELECT * FROM outbox_events
+            WHERE status = 'PENDING'
+            ORDER BY created_at ASC
+            LIMIT :limit
+            FOR UPDATE SKIP LOCKED
+            """, nativeQuery = true)
+    List<OutboxEvent> lockPendingBatch(@Param("limit") int limit);
 
-
+    /**
+     * Crash recovery: claim'leyip publish edemeden ölen poller'ın IN_FLIGHT satırlarını
+     * PENDING'e geri al (threshold'dan eski claimed_at).
+     */
+    @Modifying
+    @Query(value = """
+            UPDATE outbox_events
+            SET status = 'PENDING', claimed_at = NULL
+            WHERE status = 'IN_FLIGHT' AND claimed_at < :threshold
+            """, nativeQuery = true)
+    int reclaimStale(@Param("threshold") OffsetDateTime threshold);
 }

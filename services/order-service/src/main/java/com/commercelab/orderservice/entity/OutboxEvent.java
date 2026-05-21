@@ -57,6 +57,9 @@ public class OutboxEvent {
     @Column(name = "published_at")
     private OffsetDateTime publishedAt;
 
+    @Column(name = "claimed_at")
+    private OffsetDateTime claimedAt;
+
     @Column(name = "retry_count", nullable = false)
     @Builder.Default
     private Integer retryCount = 0;
